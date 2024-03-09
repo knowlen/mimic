@@ -1,0 +1,8 @@
+name: osrs
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy
+  - pynput=1.7
+  - python=3.11
