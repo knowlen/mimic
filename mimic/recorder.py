@@ -80,20 +80,93 @@ class ClickRecorder(Recorder):
         self.start_recording()
         self.generate_and_execute_tasks(parse_arguments().number_of_clicks)
 
-    def run(self, number_of_clicks=10):  # Now accepts number_of_clicks as a parameter
+    def run(self, number_of_clicks=10):  
         self.start_recording()
-        self.generate_and_execute_tasks(number_of_clicks)  # Pass number_of_clicks to the method
+        self.generate_and_execute_tasks(number_of_clicks) 
 
+class MouseRecorder(Recorder):
+    def __init__(self, stop_key_char='s'):
+        super().__init__(stop_key_char)
+        self.mouse_events = []  # To store both clicks and movements
+        self.ignore_input = False  # New flag to control input handling
+
+    def on_click(self, x, y, button, pressed):
+        # Record click event with timestamp
+        event_time = time.time()
+        self.mouse_events.append(('click', event_time, (x, y), button, pressed))
+
+    def on_move(self, x, y):
+        # Record movement event with timestamp
+        event_time = time.time()
+        # potential future optimization: limit data recorded to significant_move only
+        if not self.mouse_events or (self.mouse_events[-1][0] != 'move' or self.significant_move(x, y)):
+            self.mouse_events.append(('move', event_time, (x, y)))
+
+    def significant_move(self, x, y):
+        # placeholder 
+        return True 
+
+    def start_recording(self):
+        print(f"Recording mouse clicks and movements... Press {self.stop_key.char} to stop.")
+        with mouse.Listener(on_click=self.on_click, on_move=self.on_move) as listener_mouse, \
+             keyboard.Listener(on_press=self.on_press_common) as listener_keyboard:
+            super().start_recording()
+        print(f"Recorded mouse events: {len(self.mouse_events)}")
+
+
+    def on_any_input(self, *args):
+        if not self.ignore_input:
+            self.generating_stopped.set()
+
+    def generate_and_execute_tasks(self, number_of_tasks=None):
+        print("Generating and executing recorded mouse events. Any user input will stop the script.")
+        self.generating_stopped.clear()
+        
+        # Use context managers to manage listeners without manual start or stop
+        with mouse.Listener(on_move=self.on_any_input) as listener_mouse, keyboard.Listener(on_press=self.on_any_input) as listener_keyboard:
+            prev_time = None
+            for event_type, event_time, position, *args in self.mouse_events:
+                if self.generating_stopped.is_set():
+                    break
+
+                # Delay to match the recorded timing, temporarily ignoring inputs
+                if prev_time is not None:
+                    self.ignore_input = True  # Ignore inputs during sleep
+                    time.sleep(event_time - prev_time)
+                    self.ignore_input = False  # Re-enable input handling after sleep
+
+                if event_type == 'click':
+                    button, pressed = args[0], args[1]
+                    if pressed:
+                        mouse.Controller().click(button)
+                elif event_type == 'move':
+                    mouse.Controller().position = position
+
+                prev_time = event_time
+
+            if not self.generating_stopped.is_set():
+                print("Mouse event generation completed.")
+            else:
+                print("Stopped generation due to input.")
+
+    def run(self, number_of_tasks=None):
+        self.start_recording()
+        self.generate_and_execute_tasks()
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Record mouse clicks and generate synthetic clicks.')
     parser.add_argument('-n', '--number-of-clicks', type=int, default=100, help='Number of synthetic clicks to generate.')
     parser.add_argument('-s', '--stop-key', type=str, default='s', help='Key to press to stop recording.')
+    parser.add_argument('-m', '--mode', type=str, default='clicks', help='Thing to record: clicks, mouse, keyboard, or all')
     args = parser.parse_args()
     return args
 
 if __name__ == "__main__":
     args = parse_arguments()
-    click_recorder = ClickRecorder(stop_key_char=args.stop_key)
-    click_recorder.run(args.number_of_clicks)
+    if args.mode == 'clicks':
+        click_recorder = ClickRecorder(stop_key_char=args.stop_key)
+        click_recorder.run(args.number_of_clicks)
+    elif args.mode == 'mouse':
+        mouse_recorder = MouseRecorder(stop_key_char=args.stop_key)
+        mouse_recorder.run()
 
