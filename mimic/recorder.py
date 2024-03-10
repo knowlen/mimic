@@ -4,17 +4,29 @@ import time
 
 import scipy.stats
 import numpy as np
+
 from pynput import mouse, keyboard
+from pynput.keyboard import KeyCode, Key
 
 class Recorder:
     def __init__(self, stop_key_char='s'):
-        self.stop_key = keyboard.KeyCode.from_char(stop_key_char)
+        self.stop_key = KeyCode.from_char(stop_key_char)  # Handling regular character keys
         self.recording_stopped = threading.Event()
         self.generating_stopped = threading.Event()
-
+        self.keys_pressed = set()
+        self.ignore_input = False  # Initially, don't ignore input
     def on_press_common(self, key):
+        self.keys_pressed.add(key)  # Track the key
+
+        # Handle both character keys and special keys
         if key == self.stop_key:
             self.recording_stopped.set()
+        elif hasattr(key, 'char') and key.char == self.stop_key.char:
+            self.recording_stopped.set()
+
+    def on_any_input(self, *args):
+        if not self.ignore_input:  # Only set generating_stopped if we're not ignoring input
+            self.generating_stopped.set()
 
     def start_recording(self):
         self.recording_stopped.wait()
@@ -22,67 +34,62 @@ class Recorder:
     def generate_and_execute_tasks(self, number_of_tasks=10):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-    def on_any_input(self, *args):
-        self.generating_stopped.set()
-
     def run(self):
         raise NotImplementedError("This method should be implemented by subclasses.")
-
 
 
 class ClickRecorder(Recorder):
     def __init__(self, stop_key_char='s'):
         super().__init__(stop_key_char)
         self.click_times = []
-    
+
     def on_click(self, x, y, button, pressed):
         if pressed and not self.recording_stopped.is_set():
             click_time = time.time()
-            if self.click_times:
-                interval = click_time - self.click_times[-1]
-                print(f"Recorded interval: {interval}")
             self.click_times.append(click_time)
+            if len(self.click_times) > 1:
+                print(f"Recorded interval: {click_time - self.click_times[-2]}")
+
+    def on_press_during_generation(self, key):
+        # This method will now ignore keys that were pressed during the recording phase
+        if key not in self.keys_pressed and not self.ignore_input:
+            print("Non-recorded key detected, stopping generation...")
+            self.generating_stopped.set()
 
     def start_recording(self):
-        print(f"Recording clicks... Press {self.stop_key} to stop.")
+        print(f"Recording clicks... Press {self.stop_key.char} to stop.")
         with mouse.Listener(on_click=self.on_click) as listener_mouse, \
-             keyboard.Listener(on_press=self.on_press_common) as listener_keyboard:
-            super().start_recording()  # Waits for the stop signal
-        print(f"Recorded click intervals: {self.click_times}")
+             keyboard.Listener(on_press=self.on_press_common) as listener_keyboard:  
+            self.recording_stopped.wait()
+        print(f"Recorded {len(self.click_times)} clicks.")
 
     def generate_and_execute_tasks(self, number_of_clicks=10):
+        # Fit and generate intervals
         intervals = np.diff(self.click_times)
-        if not intervals.size:
-            print("Not enough intervals to calculate statistics.")
-            return
-        
         shape, loc, scale = scipy.stats.lognorm.fit(intervals, floc=0)
         synthetic_intervals = scipy.stats.lognorm.rvs(shape, loc, scale, size=number_of_clicks)
         jitter = np.random.uniform(-0.01 * scale, 0.01 * scale, number_of_clicks)
-        synthetic_intervals = np.clip(synthetic_intervals, np.min(intervals), np.max(intervals))
         synthetic_intervals += jitter
 
-        print(f"Generating and executing {number_of_clicks} synthetic clicks. Any user input will stop the script.")
+        print(f"Generating and executing {number_of_clicks} synthetic clicks. Any new user input will stop the script.")
         self.generating_stopped.clear()
 
-        with mouse.Listener(on_move=self.on_any_input), keyboard.Listener(on_press=self.on_any_input):
+        # Adjust listener setup to use on_press_during_generation for keyboard
+        with mouse.Listener(on_move=self.on_any_input) as mouse_listener, \
+             keyboard.Listener(on_press=self.on_press_during_generation) as keyboard_listener:
             for interval in synthetic_intervals:
                 if self.generating_stopped.is_set():
                     break
                 time.sleep(interval)
+                print("Click.")
                 mouse.Controller().click(mouse.Button.left)
-                print("Click: ", interval)
 
-        if self.generating_stopped.is_set():
-            print("Stopped click generation due to input.")
+            if self.generating_stopped.is_set():
+                print("Stopped generation due to input.")
 
-    def run(self):
+    def run(self, number_of_clicks=10):
         self.start_recording()
-        self.generate_and_execute_tasks(parse_arguments().number_of_clicks)
-
-    def run(self, number_of_clicks=10):  
-        self.start_recording()
-        self.generate_and_execute_tasks(number_of_clicks) 
+        self.generate_and_execute_tasks(number_of_clicks)
 
 class MouseRecorder(Recorder):
     def __init__(self, stop_key_char='s'):
